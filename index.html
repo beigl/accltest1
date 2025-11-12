@@ -1,21 +1,22 @@
 <!doctype html>
-<html lang="en">
+<html lang="de">
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Accelerometer – 10s Rolling Plot</title>
+<title>Beschleunigung – 10s Plot</title>
 <style>
   :root { color-scheme: light dark; }
   body { margin: 10px; font: 14px system-ui, sans-serif; }
-  #controls { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+  #controls { display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap; }
   button { padding:8px 12px; border-radius:10px; border:1px solid #999; background:transparent; }
   .row { display:flex; flex-direction:column; gap:8px; }
   canvas { width:100%; height:22vh; border:1px solid #ccc; border-radius:12px; }
   .label { font-weight:600; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 </style>
 
 <div id="controls">
   <button id="startBtn">Start</button>
-  <div id="status">Idle</div>
+  <div id="status" class="mono">Idle</div>
 </div>
 
 <div class="row">
@@ -28,137 +29,96 @@
 (function(){
   const STATUS = document.getElementById('status');
   const startBtn = document.getElementById('startBtn');
-  const canvases = {
-    x: document.getElementById('cx'),
-    y: document.getElementById('cy'),
-    z: document.getElementById('cz')
-  };
-  const ctx = {
-    x: canvases.x.getContext('2d'),
-    y: canvases.y.getContext('2d'),
-    z: canvases.z.getContext('2d')
-  };
+  const canvases = { x: cx, y: cy, z: cz };
+  const ctx = { x: cx.getContext('2d'), y: cy.getContext('2d'), z: cz.getContext('2d') };
 
-  // Resize canvases to device pixels for crisp lines
-  function resize() {
+  let running = false, rafId = 0;
+  const windowMs = 10000;      // 10 s Fenster
+  const fixedRange = 20;       // ±20 m/s²
+  const buf = [];              // {t,x,y,z}
+  let lastEventAt = 0;
+  let accelerometerObj = null; // Generic Sensor API, falls verfügbar
+
+  function dNow(){ return performance.now(); }
+
+  function setStatus(msg){ STATUS.textContent = msg; }
+
+  function resize(){
     for (const c of Object.values(canvases)) {
       const r = window.devicePixelRatio || 1;
-      const w = Math.floor(c.clientWidth * r);
-      const h = Math.floor(c.clientHeight * r);
-      if (c.width !== w || c.height !== h) {
-        c.width = w; c.height = h;
-      }
+      const w = Math.max(1, Math.floor(c.clientWidth * r));
+      const h = Math.max(1, Math.floor(c.clientHeight * r));
+      if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
     }
   }
   addEventListener('resize', resize, {passive:true});
   resize();
 
-  const windowMs = 10000;     // 10-second rolling window
-  const fixedRange = 20;       // ±20 m/s² vertical scale
-  const buf = [];              // {t, x, y, z} with t = performance.now()
-
-  let running = false;
-  let rafId = 0;
-
-  function now() { return performance.now(); }
-
-  function addSample(ax, ay, az) {
-    const t = now();
-    buf.push({t, x: ax, y: ay, z: az});
-    // Drop old samples outside the window
+  function addSample(ax, ay, az){
+    const t = dNow();
+    buf.push({ t, x: ax ?? 0, y: ay ?? 0, z: az ?? 0 });
     const cutoff = t - windowMs;
     while (buf.length && buf[0].t < cutoff) buf.shift();
+    lastEventAt = t;
   }
 
-  function drawSeries(key, c, g) {
-    const tEnd = now();
-    const tStart = tEnd - windowMs;
+  function yFrom(val, H){
+    const v = Math.max(-fixedRange, Math.min(fixedRange, val ?? 0));
+    // + oben, - unten (invertiertes y)
+    return H * (0.5 - (v / (2*fixedRange)) * 2);
+  }
+
+  function drawSeries(key, c, g){
+    const tEnd = dNow(), tStart = tEnd - windowMs;
     const W = c.width, H = c.height;
     g.clearRect(0,0,W,H);
 
-    // Grid: time (every 2s), accel (0 line)
-    g.lineWidth = 1;
-    g.globalAlpha = 0.25;
-    g.beginPath();
+    // Grid (alle 2 s) + Nulllinie
+    g.lineWidth = 1; g.globalAlpha = 0.25; g.beginPath();
     for (let s = Math.ceil(tStart/2000)*2000; s <= tEnd; s += 2000) {
-      const x = ((s - tStart) / windowMs) * W;
-      g.moveTo(x,0); g.lineTo(x,H);
+      const x = ((s - tStart) / windowMs) * W; g.moveTo(x,0); g.lineTo(x,H);
     }
     g.stroke();
-
-    // Zero line
-    g.beginPath();
-    const y0 = H * 0.5;
-    g.moveTo(0, yFrom(0)); g.lineTo(W, yFrom(0));
-    g.stroke();
+    g.beginPath(); g.moveTo(0,yFrom(0,H)); g.lineTo(W,yFrom(0,H)); g.stroke();
     g.globalAlpha = 1;
 
-    // Plot
-    g.lineWidth = 2;
-    g.beginPath();
+    // Daten
+    g.lineWidth = 2; g.beginPath();
     let first = true;
     for (const p of buf) {
       if (p.t < tStart) continue;
       const x = ((p.t - tStart) / windowMs) * W;
-      const y = yFrom(p[key]);
-      if (first) { g.moveTo(x,y); first=false; } else { g.lineTo(x,y); }
+      const y = yFrom(p[key], H);
+      if (first){ g.moveTo(x,y); first=false; } else { g.lineTo(x,y); }
     }
     g.stroke();
 
-    // Helper: map value -> pixel
-    function yFrom(val) {
-      const v = Math.max(-fixedRange, Math.min(fixedRange, val ?? 0));
-      // top is +range, bottom is -range (invert y)
-      return H * (0.5 - (v / (2*fixedRange)) * 2);
-    }
-
-    // Axis text
+    // Beschriftung
     g.font = Math.max(10, Math.floor(H/16)) + 'px system-ui, sans-serif';
     g.fillText('+20', 6, 14);
-    g.fillText('0', 6, yFrom(0)-4);
+    g.fillText('0', 6, yFrom(0,H)-4);
     g.fillText('-20', 6, H-6);
     g.fillText('← 10s', W-48, H-6);
   }
 
-  function render() {
+  function render(){
     drawSeries('x', canvases.x, ctx.x);
     drawSeries('y', canvases.y, ctx.y);
     drawSeries('z', canvases.z, ctx.z);
+    // Diagnose: Meldung, wenn keine Events reinkommen
+    if (running) {
+      const age = dNow() - lastEventAt;
+      if (age > 1200) {
+        setStatus('Keine Sensordaten. Prüfe HTTPS & „Bewegungssensoren erlauben“.');
+      } else {
+        setStatus('Running');
+      }
+    }
     rafId = requestAnimationFrame(render);
   }
 
-  function start() {
-    if (running) return;
-    running = true;
-    STATUS.textContent = 'Starting…';
-
-    // Some platforms require permission; Android Chrome usually does not,
-    // but this keeps it compatible. If unavailable, we just proceed.
-    const reqPerm = (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function')
-      ? DeviceMotionEvent.requestPermission().catch(()=> 'denied')
-      : Promise.resolve('granted');
-
-    reqPerm.then(() => {
-      // Listen for devicemotion
-      window.addEventListener('devicemotion', onMotion, {passive:true});
-      STATUS.textContent = 'Running';
-      render();
-    }).catch(() => {
-      STATUS.textContent = 'Permission denied or unavailable.';
-      running = false;
-    });
-  }
-
-  function stop() {
-    if (!running) return;
-    running = false;
-    cancelAnimationFrame(rafId);
-    window.removeEventListener('devicemotion', onMotion);
-    STATUS.textContent = 'Stopped';
-  }
-
-  function onMotion(e) {
-    // Prefer acceleration (without gravity); fallback to includingGravity if nulls.
+  // --- DeviceMotion (ältere Web API) ---
+  function onMotion(e){
     let ax, ay, az;
     if (e.acceleration && (e.acceleration.x!=null || e.acceleration.y!=null || e.acceleration.z!=null)) {
       ax = e.acceleration.x; ay = e.acceleration.y; az = e.acceleration.z;
@@ -167,20 +127,88 @@
       ay = e.accelerationIncludingGravity.y;
       az = e.accelerationIncludingGravity.z;
     } else {
-      return; // no data
+      return;
     }
     addSample(ax, ay, az);
   }
 
+  // --- Generic Sensor API (Fallback/Alternative) ---
+  async function tryGenericSensor(){
+    if (!('Accelerometer' in window)) return null;
+    try {
+      // 60 Hz Ziel, wo erlaubt
+      const accel = new Accelerometer({ frequency: 60 });
+      accel.addEventListener('reading', () => addSample(accel.x, accel.y, accel.z));
+      accel.start();
+      return accel;
+    } catch (err) {
+      console.warn('Generic Sensor failed:', err);
+      return null;
+    }
+  }
+
+  function hasDeviceMotion(){
+    return 'ondevicemotion' in window;
+  }
+
+  async function start(){
+    if (running) return;
+    running = true; lastEventAt = 0;
+    setStatus('Start…');
+
+    // iOS-Permission (auf Android meist nicht nötig)
+    let permPromise = Promise.resolve();
+    if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function') {
+      permPromise = DeviceMotionEvent.requestPermission().catch(()=>{ throw new Error('Permission denied'); });
+    }
+
+    try {
+      await permPromise;
+      // Event-Listener
+      if (hasDeviceMotion()) {
+        window.addEventListener('devicemotion', onMotion, {passive:true});
+      }
+      // Zusätzlich versuchen wir die Generic-Sensor-API
+      accelerometerObj = await tryGenericSensor();
+
+      // Wenn beide fehlen, sofort Hinweis
+      if (!hasDeviceMotion() && !accelerometerObj) {
+        setStatus('Kein Sensor-API verfügbar. Chrome aktualisieren / HTTPS nutzen / Einstellungen prüfen.');
+      } else {
+        setStatus('Running');
+      }
+
+      render();
+    } catch (e){
+      running = false;
+      setStatus('Zugriff verweigert oder nicht verfügbar.');
+    }
+  }
+
+  function stop(){
+    if (!running) return;
+    running = false;
+    cancelAnimationFrame(rafId);
+    window.removeEventListener('devicemotion', onMotion);
+    if (accelerometerObj && accelerometerObj.stop) accelerometerObj.stop();
+    accelerometerObj = null;
+    setStatus('Stopped');
+  }
+
   startBtn.addEventListener('click', () => {
-    if (!running) start(); else stop();
-    startBtn.textContent = running ? 'Stop' : 'Start';
+    if (!running) { start(); startBtn.textContent = 'Stop'; }
+    else { stop(); startBtn.textContent = 'Start'; }
   });
 
-  // Optional: auto-pause when tab hidden
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && running) { stop(); startBtn.textContent = 'Start'; }
   });
+
+  // Initiale Umgebungshinweise
+  const secure = (location.protocol === 'https:' || location.hostname === 'localhost');
+  if (!secure) {
+    setStatus('Hinweis: Viele Geräte senden nur über HTTPS Sensordaten.');
+  }
 })();
 </script>
 </html>
