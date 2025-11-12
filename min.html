@@ -1,7 +1,7 @@
 <!doctype html> <!-- minimal HTML5 doctype -->
 <meta name=viewport content="width=device-width,initial-scale=1"> <!-- proper scaling on phone -->
 <body style="margin:0;display:grid;place-items:center;height:100vh;gap:16px;background:#fff;font:700 28px system-ui"> <!-- center everything, large font -->
-<div id=out>Tap Start1</div> <!-- where x,y,z will be shown -->
+<div id=out>Tap Start2</div> <!-- where x,y,z will be shown -->
 <button id=btn style="font:600 22px system-ui;padding:16px 24px;border-radius:12px">Start</button> <!-- large clickable button -->
 <script>
 // when Start is tapped
@@ -11,7 +11,7 @@ btn.onclick = async () => {
   const outEl = out;                           // keep a stable reference to the output element
   // listen for accelerometer events
   window.addEventListener('devicemotion', e => {
-    const acc = e.acceleration  || {}; // prefer gravity-free, else fallback
+    const acc = e.accelerationIncludingGravity   || {}; // prefer gravity-free, else fallback
     const nums = [acc.x, acc.y, acc.z].map(v => (v ?? 0).toFixed(2));   // format numbers to 2 decimals
     outEl.textContent = `x:${nums[0]}  y:${nums[1]}  z:${nums[2]}`;     // print in the middle of the screen
   }, {passive:true});                         // passive for smoothness
