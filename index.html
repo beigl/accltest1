@@ -33,14 +33,14 @@
   const ctx = { x: cx.getContext('2d'), y: cy.getContext('2d'), z: cz.getContext('2d') };
 
   let running = false, rafId = 0;
-  const windowMs = 10000;      // 10 s Fenster
+  const windowMs = 10000;      // 10 s window
   const fixedRange = 20;       // ±20 m/s²
   const buf = [];              // {t,x,y,z}
   let lastEventAt = 0;
-  let accelerometerObj = null; // Generic Sensor API, falls verfügbar
+  let accelerometerObj = null; // Generic Sensor API, if available
+  let motionListenerAdded = false;
 
   function dNow(){ return performance.now(); }
-
   function setStatus(msg){ STATUS.textContent = msg; }
 
   function resize(){
@@ -105,7 +105,6 @@
     drawSeries('x', canvases.x, ctx.x);
     drawSeries('y', canvases.y, ctx.y);
     drawSeries('z', canvases.z, ctx.z);
-    // Diagnose: Meldung, wenn keine Events reinkommen
     if (running) {
       const age = dNow() - lastEventAt;
       if (age > 1200) {
@@ -117,7 +116,6 @@
     rafId = requestAnimationFrame(render);
   }
 
-  // --- DeviceMotion (ältere Web API) ---
   function onMotion(e){
     let ax, ay, az;
     if (e.acceleration && (e.acceleration.x!=null || e.acceleration.y!=null || e.acceleration.z!=null)) {
@@ -132,79 +130,81 @@
     addSample(ax, ay, az);
   }
 
-  // --- Generic Sensor API (Fallback/Alternative) ---
-  async function tryGenericSensor(){
-    if (!('Accelerometer' in window)) return null;
-    try {
-      // 60 Hz Ziel, wo erlaubt
-      const accel = new Accelerometer({ frequency: 60 });
-      accel.addEventListener('reading', () => addSample(accel.x, accel.y, accel.z));
-      accel.start();
-      return accel;
-    } catch (err) {
-      console.warn('Generic Sensor failed:', err);
-      return null;
+  // --- Permission request handling ---
+  async function requestMotionPermissionIfNeeded() {
+    if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+      try {
+        const perm = await DeviceMotionEvent.requestPermission();
+        if (perm !== 'granted') throw new Error("Permission not granted");
+        return true;
+      } catch (err) {
+        setStatus("Sensor-Erlaubnis verweigert!");
+        return false;
+      }
     }
+    // Android Chrome does not expose requestPermission, so just return true
+    return true;
   }
 
-  function hasDeviceMotion(){
-    return 'ondevicemotion' in window;
-  }
-
-  async function start(){
+  // --- Main Start Function ---
+  async function start() {
     if (running) return;
     running = true; lastEventAt = 0;
-    setStatus('Start…');
+    setStatus('Starte…');
 
-    // iOS-Permission (auf Android meist nicht nötig)
-    let permPromise = Promise.resolve();
-    if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function') {
-      permPromise = DeviceMotionEvent.requestPermission().catch(()=>{ throw new Error('Permission denied'); });
-    }
-
-    try {
-      await permPromise;
-      // Event-Listener
-      if (hasDeviceMotion()) {
-        window.addEventListener('devicemotion', onMotion, {passive:true});
-      }
-      // Zusätzlich versuchen wir die Generic-Sensor-API
-      accelerometerObj = await tryGenericSensor();
-
-      // Wenn beide fehlen, sofort Hinweis
-      if (!hasDeviceMotion() && !accelerometerObj) {
-        setStatus('Kein Sensor-API verfügbar. Chrome aktualisieren / HTTPS nutzen / Einstellungen prüfen.');
-      } else {
-        setStatus('Running');
-      }
-
-      render();
-    } catch (e){
+    const secure = (location.protocol === 'https:' || location.hostname === 'localhost');
+    if (!secure) {
+      setStatus('Hinweis: Viele Geräte senden nur über HTTPS Sensordaten.');
       running = false;
-      setStatus('Zugriff verweigert oder nicht verfügbar.');
+      return;
     }
+
+    // 1. Request permission if needed (iOS, possibly some Androids)
+    const permissionOk = await requestMotionPermissionIfNeeded();
+    if (!permissionOk) {
+      running = false;
+      setStatus('Bewegungssensoren Zugriff verweigert.');
+      return;
+    }
+
+    // 2. Add event listener at user interaction!
+    if (!motionListenerAdded) {
+      window.addEventListener('devicemotion', onMotion, {passive:true});
+      motionListenerAdded = true;
+    }
+
+    // 3. (Optionally: Try generic sensor API) - On Android, it's not used usually.
+    // Uncomment this if you want to try the Accelerometer API as well:
+    // tryGenericSensor();
+
+    // 4. Show running, draw loop
+    setStatus("Running");
+    render();
   }
 
-  function stop(){
+  function stop() {
     if (!running) return;
     running = false;
     cancelAnimationFrame(rafId);
-    window.removeEventListener('devicemotion', onMotion);
-    if (accelerometerObj && accelerometerObj.stop) accelerometerObj.stop();
-    accelerometerObj = null;
     setStatus('Stopped');
+    // Don't remove the eventListener, as more user-interaction-based permission requests may come in the future.
   }
 
   startBtn.addEventListener('click', () => {
-    if (!running) { start(); startBtn.textContent = 'Stop'; }
-    else { stop(); startBtn.textContent = 'Start'; }
+    if (!running) {
+      start();
+      startBtn.textContent = 'Stop';
+    } else {
+      stop();
+      startBtn.textContent = 'Start';
+    }
   });
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden && running) { stop(); startBtn.textContent = 'Start'; }
   });
 
-  // Initiale Umgebungshinweise
+  // Initial Hinweise
   const secure = (location.protocol === 'https:' || location.hostname === 'localhost');
   if (!secure) {
     setStatus('Hinweis: Viele Geräte senden nur über HTTPS Sensordaten.');
