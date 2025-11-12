@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Accelerometer – 10s Rolling Plot</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 10px; font: 14px system-ui, sans-serif; }
+  #controls { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+  button { padding:8px 12px; border-radius:10px; border:1px solid #999; background:transparent; }
+  .row { display:flex; flex-direction:column; gap:8px; }
+  canvas { width:100%; height:22vh; border:1px solid #ccc; border-radius:12px; }
+  .label { font-weight:600; }
+</style>
+
+<div id="controls">
+  <button id="startBtn">Start</button>
+  <div id="status">Idle</div>
+</div>
+
+<div class="row">
+  <div class="label">X (m/s²)</div><canvas id="cx"></canvas>
+  <div class="label">Y (m/s²)</div><canvas id="cy"></canvas>
+  <div class="label">Z (m/s²)</div><canvas id="cz"></canvas>
+</div>
+
+<script>
+(function(){
+  const STATUS = document.getElementById('status');
+  const startBtn = document.getElementById('startBtn');
+  const canvases = {
+    x: document.getElementById('cx'),
+    y: document.getElementById('cy'),
+    z: document.getElementById('cz')
+  };
+  const ctx = {
+    x: canvases.x.getContext('2d'),
+    y: canvases.y.getContext('2d'),
+    z: canvases.z.getContext('2d')
+  };
+
+  // Resize canvases to device pixels for crisp lines
+  function resize() {
+    for (const c of Object.values(canvases)) {
+      const r = window.devicePixelRatio || 1;
+      const w = Math.floor(c.clientWidth * r);
+      const h = Math.floor(c.clientHeight * r);
+      if (c.width !== w || c.height !== h) {
+        c.width = w; c.height = h;
+      }
+    }
+  }
+  addEventListener('resize', resize, {passive:true});
+  resize();
+
+  const windowMs = 10000;     // 10-second rolling window
+  const fixedRange = 20;       // ±20 m/s² vertical scale
+  const buf = [];              // {t, x, y, z} with t = performance.now()
+
+  let running = false;
+  let rafId = 0;
+
+  function now() { return performance.now(); }
+
+  function addSample(ax, ay, az) {
+    const t = now();
+    buf.push({t, x: ax, y: ay, z: az});
+    // Drop old samples outside the window
+    const cutoff = t - windowMs;
+    while (buf.length && buf[0].t < cutoff) buf.shift();
+  }
+
+  function drawSeries(key, c, g) {
+    const tEnd = now();
+    const tStart = tEnd - windowMs;
+    const W = c.width, H = c.height;
+    g.clearRect(0,0,W,H);
+
+    // Grid: time (every 2s), accel (0 line)
+    g.lineWidth = 1;
+    g.globalAlpha = 0.25;
+    g.beginPath();
+    for (let s = Math.ceil(tStart/2000)*2000; s <= tEnd; s += 2000) {
+      const x = ((s - tStart) / windowMs) * W;
+      g.moveTo(x,0); g.lineTo(x,H);
+    }
+    g.stroke();
+
+    // Zero line
+    g.beginPath();
+    const y0 = H * 0.5;
+    g.moveTo(0, yFrom(0)); g.lineTo(W, yFrom(0));
+    g.stroke();
+    g.globalAlpha = 1;
+
+    // Plot
+    g.lineWidth = 2;
+    g.beginPath();
+    let first = true;
+    for (const p of buf) {
+      if (p.t < tStart) continue;
+      const x = ((p.t - tStart) / windowMs) * W;
+      const y = yFrom(p[key]);
+      if (first) { g.moveTo(x,y); first=false; } else { g.lineTo(x,y); }
+    }
+    g.stroke();
+
+    // Helper: map value -> pixel
+    function yFrom(val) {
+      const v = Math.max(-fixedRange, Math.min(fixedRange, val ?? 0));
+      // top is +range, bottom is -range (invert y)
+      return H * (0.5 - (v / (2*fixedRange)) * 2);
+    }
+
+    // Axis text
+    g.font = Math.max(10, Math.floor(H/16)) + 'px system-ui, sans-serif';
+    g.fillText('+20', 6, 14);
+    g.fillText('0', 6, yFrom(0)-4);
+    g.fillText('-20', 6, H-6);
+    g.fillText('← 10s', W-48, H-6);
+  }
+
+  function render() {
+    drawSeries('x', canvases.x, ctx.x);
+    drawSeries('y', canvases.y, ctx.y);
+    drawSeries('z', canvases.z, ctx.z);
+    rafId = requestAnimationFrame(render);
+  }
+
+  function start() {
+    if (running) return;
+    running = true;
+    STATUS.textContent = 'Starting…';
+
+    // Some platforms require permission; Android Chrome usually does not,
+    // but this keeps it compatible. If unavailable, we just proceed.
+    const reqPerm = (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function')
+      ? DeviceMotionEvent.requestPermission().catch(()=> 'denied')
+      : Promise.resolve('granted');
+
+    reqPerm.then(() => {
+      // Listen for devicemotion
+      window.addEventListener('devicemotion', onMotion, {passive:true});
+      STATUS.textContent = 'Running';
+      render();
+    }).catch(() => {
+      STATUS.textContent = 'Permission denied or unavailable.';
+      running = false;
+    });
+  }
+
+  function stop() {
+    if (!running) return;
+    running = false;
+    cancelAnimationFrame(rafId);
+    window.removeEventListener('devicemotion', onMotion);
+    STATUS.textContent = 'Stopped';
+  }
+
+  function onMotion(e) {
+    // Prefer acceleration (without gravity); fallback to includingGravity if nulls.
+    let ax, ay, az;
+    if (e.acceleration && (e.acceleration.x!=null || e.acceleration.y!=null || e.acceleration.z!=null)) {
+      ax = e.acceleration.x; ay = e.acceleration.y; az = e.acceleration.z;
+    } else if (e.accelerationIncludingGravity) {
+      ax = e.accelerationIncludingGravity.x;
+      ay = e.accelerationIncludingGravity.y;
+      az = e.accelerationIncludingGravity.z;
+    } else {
+      return; // no data
+    }
+    addSample(ax, ay, az);
+  }
+
+  startBtn.addEventListener('click', () => {
+    if (!running) start(); else stop();
+    startBtn.textContent = running ? 'Stop' : 'Start';
+  });
+
+  // Optional: auto-pause when tab hidden
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && running) { stop(); startBtn.textContent = 'Start'; }
+  });
+})();
+</script>
+</html>
