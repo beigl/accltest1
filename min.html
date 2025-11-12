@@ -11,7 +11,7 @@ btn.onclick = async () => {
   const outEl = out;                           // keep a stable reference to the output element
   // listen for accelerometer events
   window.addEventListener('devicemotion', e => {
-    const acc = e.acceleration || e.accelerationIncludingGravity || {}; // prefer gravity-free, else fallback
+    const acc = e.acceleration  || {}; // prefer gravity-free, else fallback
     const nums = [acc.x, acc.y, acc.z].map(v => (v ?? 0).toFixed(2));   // format numbers to 2 decimals
     outEl.textContent = `x:${nums[0]}  y:${nums[1]}  z:${nums[2]}`;     // print in the middle of the screen
   }, {passive:true});                         // passive for smoothness
