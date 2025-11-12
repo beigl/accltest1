@@ -1,0 +1,20 @@
+<!doctype html><html><body>
+<center><h1 id=a>Tap Start</h1><button id=b>Start</button></center>
+<script>
+// when button clicked
+b.onclick=async()=>{
+  // iOS needs permission (Android ignores)
+  if(DeviceMotionEvent.requestPermission) await DeviceMotionEvent.requestPermission();
+  // listen for motion events
+  ondevicemotion=e=>{
+    // pick acceleration or fallback
+    let a=e.acceleration||e.accelerationIncludingGravity;
+    // show values with 2 decimals
+    a.innerHTML=(a.x??0).toFixed(2)+", "+(a.y??0).toFixed(2)+", "+(a.z??0).toFixed(2);
+  };
+  // start updating display every event
+  window.addEventListener("devicemotion",ondevicemotion);
+  b.remove(); // remove button after start
+};
+</script>
+</body></html>
